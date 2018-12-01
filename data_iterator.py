@@ -188,7 +188,7 @@ class DatasetIterator:
 
 class Dataset:
     def __init__(self,
-                 acdc_raw_folder="'/home/nhat/ACDC-dataset'",
+                 acdc_raw_folder="'/home/user/ACDC-dataset'",
                  preprocessing_folder='preproc_data',
                  train_set_size=1000000, valid_set_size=1000000,
                  num_cls=1):

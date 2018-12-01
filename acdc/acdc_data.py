@@ -373,7 +373,7 @@ def load_and_maybe_process_data(input_folder,
 
 
 if __name__ == '__main__':
-    input_folder = "/home/nhat/ACDC-dataset"
+    input_folder = "/home/user/ACDC-dataset"
     preprocessing_folder = 'preproc_data'
 
     # d=load_and_maybe_process_data(input_folder, preprocessing_folder, '3D', (116,116,28), (2.5,2.5,5))

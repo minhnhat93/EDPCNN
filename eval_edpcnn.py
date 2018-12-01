@@ -2,7 +2,7 @@ import matplotlib
 
 from snake.snake import SnakePytorch
 import torch
-from train_sg import get_star_pattern_values, make_batch_input, smooth_ind, np, \
+from train_edpcnn import get_star_pattern_values, make_batch_input, smooth_ind, np, \
     dice_score, star_pattern_ind_to_mask, get_random_jitter
 from losses import dice_score_inside_bboxes
 import argparse

@@ -1,4 +1,4 @@
-from train_sg import parse_args, main as train
+from train_edpcnn import parse_args, main as train
 import os
 
 n_lines_list = [12, 25, 50, 100]
