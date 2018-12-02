@@ -31,12 +31,12 @@ for Left Ventricle Segmentation](https://drive.google.com/open?id=1cdH1YaqkBciMP
 - Download the ACDC dataset. Extract the zip file into a folder. Change the `input_folder` path in `acdc/acdc_data.py`. Then from this repository root folder,
 run `PYTHONPATH=$PYTHONPATH:$(pwd) python acdc/acdc_data.py` to build to preprocessed data. Alternatively, you can create a folder call `preproc_data` and download the dataset hdf5 file from this [Google Drive](https://drive.google.com/open?id=1B7JC3WVSq1CcPJmYc3RGfhVFL12BWNKJ) link.
 
-- The experiments can be found in 3 files `run_sg.py`, `run_sg_param_test.py`, `run_unet.py`.
+- The experiments can be found in 3 files `run_edpcnn.py`, `run_edpcnn_param_test.py`, `run_unet.py`.
 
-- The main files used to train are `train_sg.py` and `train_unet.py`. Example how to run them can be found
+- The main files used to train are `train_edpcnn.py` and `train_unet.py`. Example how to run them can be found
 in the experiments files.
 
-- For evaluation, refer to `eval_sg.py`, `eval_unet.py` and `eval-unet-dp.py`
+- For evaluation, refer to `eval_edpcnn.py`, `eval_unet.py` and `eval-unet-dp.py`
 
 # Note
 - This code only works on GPUs, preferrably NVIDIA ones with at least 10GB of VRAM. For GPUs with less VRAM, lowering the batch size may help.
