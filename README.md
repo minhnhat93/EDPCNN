@@ -11,7 +11,7 @@ for Left Ventricle Segmentation](https://drive.google.com/open?id=1cdH1YaqkBciMP
 (a) input image 
 (b) Output Map with an examplar star pattern 
 (c) Warped Map 
-(d) output contour
+(d) output indices for each radial line in the star pattern
 (e) output segmentation
 (f) ground truth segmentation
 
