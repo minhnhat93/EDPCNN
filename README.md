@@ -36,7 +36,7 @@ run `PYTHONPATH=$PYTHONPATH:$(pwd) python acdc/acdc_data.py` to build to preproc
 - The main files used to train are `train_edpcnn.py` and `train_unet.py`. Example how to run them can be found
 in the experiments files.
 
-- For evaluation, refer to `eval_edpcnn.py`, `eval_unet.py` and `eval-unet-dp.py`
+- For evaluation, refer to `eval_edpcnn.py`, `eval_unet.py` and `eval_unet+dp.py`
 
 # Note
 - This code only works on GPUs, preferrably NVIDIA ones with at least 10GB of VRAM. For GPUs with less VRAM, lowering the batch size may help.
