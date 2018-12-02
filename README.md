@@ -29,7 +29,7 @@ for Left Ventricle Segmentation](https://drive.google.com/file/d/1X8TkRHZlQoQd67
 
 # How to run
 - Download the ACDC dataset. Extract the zip file into a folder. Change the `input_folder` path in `acdc/acdc_data.py`. Then from this repository root folder,
-run `PYTHONPATH=$PYTHONPATH:$(pwd) python acdc/acdc_data.py` to build to preprocessed data. Alternatively, you can create a folder call 'preproc_data' and download the dataset hdf5 file from this [Google Drive](https://drive.google.com/drive/folders/1H0pkN32TRJkhwa5ZQq8Sc0R4NuqTkHqB?usp=sharing) link.
+run `PYTHONPATH=$PYTHONPATH:$(pwd) python acdc/acdc_data.py` to build to preprocessed data. Alternatively, you can create a folder call `preproc_data` and download the dataset hdf5 file from this [Google Drive](https://drive.google.com/open?id=1B7JC3WVSq1CcPJmYc3RGfhVFL12BWNKJ) link.
 
 - The experiments can be found in 3 files `run_sg.py`, `run_sg_param_test.py`, `run_unet.py`.
 
@@ -41,9 +41,9 @@ in the experiments files.
 # Note
 - This code only works on GPUs, preferrably NVIDIA ones with at least 10GB of VRAM. For GPUs with less VRAM, lowering the batch size may help.
 
-- Due to the non-deterministic nature of large matrices reduction operations on GPU, the results over multiple runs will be slightly different but they usually have very similar loss curve and final performance.
+- Due to the non-deterministic nature of large matrices reduction operations on GPU, the results over multiple runs will be slightly different but they usually have very similar loss curves and final performance.
 
-- Sometime the training of the original U-Net may diverge on 10 training images, simply restart the run script if this occurs.
+- Sometime the training of the original U-Net may diverge on train set with only 10 images, simply restart the run script if this occurs.
 
 # Result
 ![result](imgs/result_combined.png)
