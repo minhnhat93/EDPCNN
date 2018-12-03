@@ -1,5 +1,5 @@
 # Introduction
-Code for our paper: [End-to-end Learning of Convolutional NeuralNet and Dynamic Programming 
+Code for our paper: [End-to-end Learning of Convolutional Neural Net and Dynamic Programming 
 for Left Ventricle Segmentation](https://drive.google.com/open?id=1cdH1YaqkBciMPwCFaRS8bh2UtytyQwkM)
 
 ## Pipeline overview:
