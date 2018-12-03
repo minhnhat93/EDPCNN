@@ -9,8 +9,7 @@ from network import UNet
 import _pickle
 
 
-def do_eval(net, snake: SnakePytorch, imgs, masks, centers, bboxes, batch_sz, num_lines, radius, smoothing_window=None,
-            jitter_radius=None, jitter_radius_ratio=0.1):
+def do_eval(net, snake: SnakePytorch, imgs, masks, centers, bboxes, batch_sz, num_lines, radius, smoothing_window=None):
     net.eval()
     H, W = imgs.shape[-2:]
     if smoothing_window is None:
@@ -35,24 +34,7 @@ def do_eval(net, snake: SnakePytorch, imgs, masks, centers, bboxes, batch_sz, nu
             gs_logits = net(batch_input)
             gs_logits = gs_logits[:, 1, ...]
 
-            if jitter_radius is not None:
-                jitter_radius_batch = jitter_radius[start:end]
-                center_jitters, angle_jitters = [], []
-                for img, center, j_r in zip(imgs, centers, jitter_radius_batch):
-                    c_j, a_j = get_random_jitter(j_r * jitter_radius_ratio, 0.0)
-                    # c_j, a_j = [np.asarray([0, 0])], [0]
-                    # c_j, a_j = c_j[0], a_j[0]
-                    center_jitters.append(c_j)
-                    angle_jitters.append(a_j)
-
-                center_jitters = np.asarray(center_jitters)
-                angle_jitters = np.asarray(angle_jitters)
-
-                # get pixel values on the star pattern
-                gs_logits, _, _ = get_star_pattern_values(gs_logits, None, centers_batch, num_lines, radius + 1,
-                                                          center_jitters=center_jitters, angle_jitters=angle_jitters)
-            else:
-                gs_logits, _, _ = get_star_pattern_values(gs_logits, None, centers_batch, num_lines, radius + 1)
+            gs_logits, _, _ = get_star_pattern_values(gs_logits, None, centers_batch, num_lines, radius + 1)
 
             gs = gs_logits[:, :, 1:] - gs_logits[:, :, :-1]
 
@@ -80,22 +62,15 @@ def do_eval(net, snake: SnakePytorch, imgs, masks, centers, bboxes, batch_sz, nu
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--ckpt_path', type=str)
-    parser.add_argument('--delta', type=int, default=2, metavar='N',
+    parser.add_argument('--delta', type=int, default=1, metavar='N',
                         help='smoothness constraint for snake')
-    parser.add_argument('--num_lines', type=int, default=50, metavar='N',
+    parser.add_argument('--num_lines', type=int, default=25, metavar='N',
                         help='number of radial lines')
-    parser.add_argument('--num_pts', type=int, default=60, metavar='N',
-                        help='number of points on each radial lines')
-    parser.add_argument('--radius', type=int, default=60, metavar='N',
+    parser.add_argument('--radius', type=int, default=65, metavar='N',
                         help='radius of the star pattern, should be big'
                              ' enough to cover the segmentation patches')
-    parser.add_argument('--smoothing_window', default=3, type=int)
-    parser.add_argument('--batch_sz', type=int, default=100, metavar='N')
-    parser.add_argument('--plot_dir', type=str, default='./debug_plot')
-
-    parser.add_argument('--jitter_radius_ratio', type=float, default=0.1,
-                        help='ratio of the radius to jitter')
-    parser.add_argument('--seed', type=int, default=0, metavar='N')
+    parser.add_argument('--smoothing_window', default=7, type=int)
+    parser.add_argument('--batch_sz', type=int, default=20, metavar='N')
 
     args = parser.parse_args()
     return args
@@ -113,7 +88,7 @@ if __name__ == "__main__":
 
     net.load_state_dict(_pickle.load(open(args.ckpt_path, 'rb')))
 
-    snake = SnakePytorch(args.delta, args.batch_sz, args.num_lines, args.num_pts)
+    snake = SnakePytorch(args.delta, args.batch_sz, args.num_lines, args.radius)
 
     print("eval...")
     dice, dice_inside_bboxes = \
