@@ -1,6 +1,6 @@
 # Introduction
 Code for our paper: [End-to-end Learning of Convolutional Neural Net and Dynamic Programming 
-for Left Ventricle Segmentation](https://drive.google.com/open?id=1cdH1YaqkBciMPwCFaRS8bh2UtytyQwkM)
+for Left Ventricle Segmentation](https://arxiv.org/abs/1812.00328)
 
 ## Pipeline overview:
 ![pipeline](imgs/EDPCNN_pipeline.png)
