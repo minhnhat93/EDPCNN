@@ -43,7 +43,7 @@ in the experiments files.
 
 - Due to the non-deterministic nature of large matrices reduction operations on GPU, the results over multiple runs will be slightly different but they usually have very similar loss curves and final performance.
 
-- Sometime the training of the original U-Net may diverge on train set with only 10 images, simply restart the run script if this occurs.
+- Sometime the training of the original U-Net may diverge and never go above 20% dice score on train set with only 10 images, simply restart the run script if this occurs.
 
 # Result
 ![result](imgs/result_combined.png)
