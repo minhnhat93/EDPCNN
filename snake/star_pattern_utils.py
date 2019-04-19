@@ -45,14 +45,27 @@ def star_pattern_ind_to_image_ind(ind, center, min_radius, max_radius, num_line,
     rows = (rs * sin_t).flatten()
     cols = (rs * cos_t).flatten()
     output = np.stack([rows, cols], -1)
-    center = (np.asarray(center) + np.asarray(center_jitter)).reshape([1, 2])
-    output = output + center
-    # output = np.clip(output, 0, np.inf)
-    if max_dim:
-        output[:, 0] = np.clip(output[:, 0], 0, max_dim[0])
-        output[:, 1] = np.clip(output[:, 1], 0, max_dim[1])
-    if round_to_int:
-        output = np.round(output)
+    if not np.any(np.isnan(center)):
+        center = (np.asarray(center) + np.asarray(center_jitter)).reshape([1, 2])
+        output = output + center
+        # output = np.clip(output, 0, np.inf)
+        if max_dim:
+            output[:, 0] = np.clip(output[:, 0], 0, max_dim[0])
+            output[:, 1] = np.clip(output[:, 1], 0, max_dim[1])
+        if round_to_int:
+            output = np.round(output)
+    else:
+        output = np.zeros_like(output)
+
+    # import matplotlib.pyplot as plt
+    # img = np.zeros((212, 212))
+    # plt.imshow(img)
+    # for j, pt in enumerate(output):
+    #     if j<num_point_on_line:
+    #         plt.plot(pt[1], pt[0], 'y.')
+    #     else:
+    #         plt.plot(pt[1], pt[0], 'g.')
+    # plt.show()
     return output
 
 

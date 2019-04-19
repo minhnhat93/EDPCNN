@@ -1,17 +1,13 @@
+# https://github.com/jvanvugt/pytorch-unet/blob/master/unet.py
 import torch
-import torch.nn.functional as F
 from torch import nn
-import numpy as np
+import torch.nn.functional as F
 
-
-# =============================================
-# U-Net
-# modified from: https://raw.githubusercontent.com/zijundeng/pytorch-semantic-segmentation/master/models/u_net.py
 
 def initialize_weights(*models):
     for model in models:
         for module in model.modules():
-            if isinstance(module, nn.Conv2d) or isinstance(module, nn.Linear):
+            if isinstance(module, nn.Conv2d) or isinstance(module, nn.ConvTranspose2d) or isinstance(module, nn.Linear):
                 nn.init.kaiming_normal(module.weight)
                 if module.bias is not None:
                     module.bias.data.zero_()
@@ -20,149 +16,141 @@ def initialize_weights(*models):
                 module.bias.data.zero_()
 
 
-class _EncoderBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, dropout=False):
-        super(_EncoderBlock, self).__init__()
-        layers = [
-            nn.Conv2d(in_channels, out_channels, kernel_size=3),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-        ]
-        if dropout:
-            layers.append(nn.Dropout())
-        layers.append(nn.MaxPool2d(kernel_size=2, stride=2))
-        self.encode = nn.Sequential(*layers)
-
-    def forward(self, x):
-        return self.encode(x)
-
-
-class _DecoderBlock(nn.Module):
-    def __init__(self, in_channels, middle_channels, out_channels):
-        super(_DecoderBlock, self).__init__()
-        self.decode = nn.Sequential(
-            nn.Conv2d(in_channels, middle_channels, kernel_size=3),
-            nn.BatchNorm2d(middle_channels),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(middle_channels, middle_channels, kernel_size=3),
-            nn.BatchNorm2d(middle_channels),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(middle_channels, out_channels, kernel_size=2, stride=2),
-        )
-
-    def forward(self, x):
-        return self.decode(x)
-
-
 class UNet(nn.Module):
-    def __init__(self, n_bc=64, in_dim=3, out_dim=1):
+    def __init__(self, in_dim=1, out_dim=2, depth=5, wf=6, padding=False,
+                 batch_norm=True, up_mode='upconv4', first_layer_pad=92, last_layer_resize=False):
+        """
+        Implementation of
+        U-Net: Convolutional Networks for Biomedical Image Segmentation
+        (Ronneberger et al., 2015)
+        https://arxiv.org/abs/1505.04597
+        Using the default arguments will yield the exact version used
+        in the original paper
+        Args:
+            in_channels (int): number of input channels
+            n_classes (int): number of output channels
+            depth (int): depth of the network
+            wf (int): number of filters in the first layer is 2**wf
+            padding (bool): if True, apply padding such that the input shape
+                            is the same as the output.
+                            This may introduce artifacts
+            batch_norm (bool): Use BatchNorm after layers with an
+                               activation function
+            up_mode (str): one of 'upconv4', 'upconv2' or 'upsample'.
+                           'upconv4'/'upconv2' will use transposed convolutions for
+                           learned upsampling.
+                           'upsample' will use bilinear upsampling.
+        """
         super(UNet, self).__init__()
-        self.pad = nn.ConstantPad2d(92, 0.0)
-        self.enc1 = _EncoderBlock(in_dim, n_bc)
-        self.enc2 = _EncoderBlock(n_bc, n_bc * 2)
-        self.enc3 = _EncoderBlock(n_bc * 2, n_bc * 4)
-        self.enc4 = _EncoderBlock(n_bc * 4, n_bc * 8, dropout=True)
-        self.center = _DecoderBlock(n_bc * 8, n_bc * 16, n_bc * 8)
-        self.dec4 = _DecoderBlock(n_bc * 16, n_bc * 8, n_bc * 4)
-        self.dec3 = _DecoderBlock(n_bc * 8, n_bc * 4, n_bc * 2)
-        self.dec2 = _DecoderBlock(n_bc * 4, n_bc * 2, n_bc)
-        self.dec1 = nn.Sequential(
-            nn.Conv2d(n_bc * 2, n_bc, kernel_size=3),
-            nn.BatchNorm2d(n_bc),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(n_bc, n_bc, kernel_size=3),
-            nn.BatchNorm2d(n_bc),
-            nn.ReLU(inplace=True),
-        )
-        self.final = nn.Conv2d(n_bc, out_dim, kernel_size=1)  # 2 out channel = mean + variance
+        assert up_mode in ('upconv4', 'upconv2', 'rsz_conv_nn3', 'rsz_conv_bl3', 'rsz_conv_bl1')
+        self.padding = padding
+        self.depth = depth
+        prev_channels = in_dim
+        if first_layer_pad is not None:
+            self.first_layer_pad = nn.ConstantPad2d(first_layer_pad, 0.0)
+        else:
+            self.first_layer_pad = None
+        self.down_path = nn.ModuleList()
+        for i in range(depth):
+            self.down_path.append(UNetConvBlock(prev_channels, 2**(wf+i),
+                                                padding, batch_norm))
+            prev_channels = 2**(wf+i)
+
+        self.up_path = nn.ModuleList()
+        for i in reversed(range(depth - 1)):
+            self.up_path.append(UNetUpBlock(prev_channels, 2**(wf+i), up_mode,
+                                            padding, batch_norm))
+            prev_channels = 2**(wf+i)
+
+        self.last = nn.Conv2d(prev_channels, out_dim, kernel_size=1)
+        self.last_layer_resize = last_layer_resize
         initialize_weights(self)
 
     def forward(self, x):
-        pad = self.pad(x)
-        enc1 = self.enc1(pad)
-        enc2 = self.enc2(enc1)
-        enc3 = self.enc3(enc2)
-        enc4 = self.enc4(enc3)
-        center = self.center(enc4)
-        dec4 = self.dec4(torch.cat([center, F.interpolate(enc4, center.size()[2:], mode='bilinear')], 1))
-        dec3 = self.dec3(torch.cat([dec4, F.interpolate(enc3, dec4.size()[2:], mode='bilinear')], 1))
-        dec2 = self.dec2(torch.cat([dec3, F.interpolate(enc2, dec3.size()[2:], mode='bilinear')], 1))
-        dec1 = self.dec1(torch.cat([dec2, F.interpolate(enc1, dec2.size()[2:], mode='bilinear')], 1))
-        final = self.final(dec1)
-        return final
+        in_size = x.size()[-2:]
+        if self.first_layer_pad is not None:
+            x = self.first_layer_pad(x)
+
+        blocks = []
+        for i, down in enumerate(self.down_path):
+            x = down(x)
+            if i != len(self.down_path)-1:
+                blocks.append(x)
+                x = F.max_pool2d(x, 2)
+
+        for i, up in enumerate(self.up_path):
+            x = up(x, blocks[-i-1])
+
+        x = self.last(x)
+        if self.last_layer_resize:
+            x = F.interpolate(x, in_size, mode='bilinear')
+        return x
 
 
-# ============================================
-# Approximate network
-class _EncoderBlockWithPadding(nn.Module):
-    def __init__(self, in_channels, out_channels, dropout=False):
-        super(_EncoderBlockWithPadding, self).__init__()
-        layers = [
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-        ]
-        if dropout:
-            layers.append(nn.Dropout())
-        layers.append(nn.MaxPool2d(kernel_size=2, stride=2))
-        self.encode = nn.Sequential(*layers)
+class UNetConvBlock(nn.Module):
+    def __init__(self, in_size, out_size, padding, batch_norm):
+        super(UNetConvBlock, self).__init__()
+        block = []
 
-    def forward(self, x):
-        return self.encode(x)
+        block.append(nn.Conv2d(in_size, out_size, kernel_size=3,
+                               padding=int(padding)))
+        if batch_norm:
+            block.append(nn.BatchNorm2d(out_size, momentum=0.99, eps=1e-3))
+        block.append(nn.ReLU())
 
+        block.append(nn.Conv2d(out_size, out_size, kernel_size=3,
+                               padding=int(padding)))
+        if batch_norm:
+            block.append(nn.BatchNorm2d(out_size, momentum=0.99, eps=1e-3))
+        block.append(nn.ReLU())
 
-class _DecoderBlockWithPadding(nn.Module):
-    def __init__(self, in_channels, middle_channels, out_channels):
-        super(_DecoderBlockWithPadding, self).__init__()
-        self.decode = nn.Sequential(
-            nn.Conv2d(in_channels, middle_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(middle_channels),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(middle_channels, middle_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(middle_channels),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(middle_channels, out_channels, kernel_size=2, stride=2),
-        )
+        self.block = nn.Sequential(*block)
 
     def forward(self, x):
-        return self.decode(x)
+        out = self.block(x)
+        return out
 
 
-class SnakeApproxNet(nn.Module):
-    def __init__(self, in_dim=1, n_bc=64):
-        super(SnakeApproxNet, self).__init__()
-        out_dim = 1
-        self.enc1 = _EncoderBlockWithPadding(in_dim, n_bc)
-        self.enc2 = _EncoderBlockWithPadding(n_bc, n_bc * 2)
-        self.enc3 = _EncoderBlockWithPadding(n_bc * 2, n_bc * 4, dropout=True)
-        self.center = _DecoderBlockWithPadding(n_bc * 4, n_bc * 8, n_bc * 4)
-        self.dec3 = _DecoderBlockWithPadding(n_bc * 8, n_bc * 4, n_bc * 2)
-        self.dec2 = _DecoderBlockWithPadding(n_bc * 4, n_bc * 2, n_bc)
-        self.dec1 = nn.Sequential(
-            nn.Conv2d(n_bc * 2, n_bc, kernel_size=3),
-            nn.BatchNorm2d(n_bc),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(n_bc, n_bc, kernel_size=3),
-            nn.BatchNorm2d(n_bc),
-            nn.ReLU(inplace=True),
-        )
-        self.final = nn.Conv2d(n_bc, out_dim, kernel_size=1)  # 2 out channel = mean + variance
-        initialize_weights(self)
+class UNetUpBlock(nn.Module):
+    def __init__(self, in_size, out_size, up_mode, padding, batch_norm):
+        super(UNetUpBlock, self).__init__()
+        if up_mode == 'upconv4':
+            self.up = nn.Sequential(
+                nn.ConvTranspose2d(in_size, out_size, kernel_size=4, stride=2, padding=1),
+                nn.BatchNorm2d(out_size, momentum=0.99, eps=1e-3),
+                nn.ReLU(),
+            )
 
-    def forward(self, x):
-        enc1 = self.enc1(x)
-        enc2 = self.enc2(enc1)
-        enc3 = self.enc3(enc2)
-        center = self.center(enc3)
-        dec3 = self.dec3(torch.cat([center, F.interpolate(enc3, center.size()[2:], mode='bilinear')], 1))
-        dec2 = self.dec2(torch.cat([dec3, F.interpolate(enc2, dec3.size()[2:], mode='bilinear')], 1))
-        dec1 = self.dec1(torch.cat([dec2, F.interpolate(enc1, dec2.size()[2:], mode='bilinear')], 1))
-        final = self.final(dec1)
-        up_sample = F.interpolate(final, x.size()[-2:], mode='bilinear')
-        return up_sample
+        elif up_mode == 'upconv2':
+            self.up = nn.Sequential(
+                nn.ConvTranspose2d(in_size, out_size, kernel_size=2, stride=2),
+                nn.BatchNorm2d(out_size, momentum=0.99, eps=1e-3),
+                nn.ReLU(),
+            )
+        elif up_mode == 'rsz_conv_nn3':
+            self.up = nn.Sequential(nn.Upsample(mode='nearest', scale_factor=2),
+                                    nn.Conv2d(in_size, out_size, kernel_size=3, padding=1))
+        elif up_mode == 'rsz_conv_bl3':
+            self.up = nn.Sequential(nn.Upsample(mode='bilinear', scale_factor=2),
+                                    nn.Conv2d(in_size, out_size, kernel_size=3, padding=1))
+        elif up_mode == 'rsz_conv_bl1':
+            self.up = nn.Sequential(nn.Upsample(mode='bilinear', scale_factor=2),
+                                    nn.Conv2d(in_size, out_size, kernel_size=1))
+        else:
+            raise NotImplementedError
+
+        self.conv_block = UNetConvBlock(in_size, out_size, padding, batch_norm)
+
+    def center_crop(self, layer, target_size):
+        _, _, layer_height, layer_width = layer.size()
+        diff_y = (layer_height - target_size[0]) // 2
+        diff_x = (layer_width - target_size[1]) // 2
+        return layer[:, :, diff_y:(diff_y + target_size[0]), diff_x:(diff_x + target_size[1])]
+
+    def forward(self, x, bridge):
+        up = self.up(x)
+        crop1 = self.center_crop(bridge, up.shape[2:])
+        out = torch.cat([up, crop1], 1)
+        out = self.conv_block(out)
+
+        return out

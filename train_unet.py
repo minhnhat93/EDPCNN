@@ -9,7 +9,7 @@ from losses import dice_loss, dice_score
 import torch.nn.functional as F
 import numpy as np
 import _pickle
-import timeit
+from warmup_scheduler import GradualWarmupScheduler
 
 
 def parse_args():
@@ -26,6 +26,8 @@ def parse_args():
     parser.add_argument('--train_set_sz', default=100000000, type=int)
     parser.add_argument('--num_cls', default=1, type=int)
     parser.add_argument('--log_dir', default='log/unet', type=str)
+    parser.add_argument('--use_ce', dest='use_ce', action='store_true')
+    parser.set_defaults(use_ce=False)
     args = parser.parse_args()
     return args
 
@@ -69,7 +71,7 @@ def main(args):
     torch.backends.cudnn.benchmark = True
     seed_all(args.seed)
 
-    d = Dataset(train_set_size=args.train_set_sz, num_cls=args.num_cls)
+    d = Dataset(train_set_size=args.train_set_sz, num_cls=args.num_cls, remove_nan_center=False)
     train = d.train_set
     valid = d.test_set
 
@@ -80,6 +82,7 @@ def main(args):
     best_cls_val_dices = None
 
     optimizer = torch.optim.Adam(params=net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    scheduler_warmup = GradualWarmupScheduler(optimizer, multiplier=10, total_epoch=50, after_scheduler=None)
 
     if not os.path.exists(args.log_dir):
         os.makedirs(args.log_dir, exist_ok=True)
@@ -100,14 +103,19 @@ def main(args):
             pred_logit = net(imgs)
             pred_softmax = F.softmax(pred_logit, dim=1)
 
-            loss = dice_loss(pred_softmax, one_hot_masks, keep_background=False).mean()
+            if args.use_ce:
+                ce = torch.nn.CrossEntropyLoss()
+                loss = ce(pred_logit, torch.cuda.LongTensor(masks))
+            else:
+                loss = dice_loss(pred_softmax, one_hot_masks, keep_background=False).mean()
 
+            scheduler_warmup.step()
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
             if step % args.log_freq == 0:
-                print(f"step={step}\tepoch={epoch}\titer={iteration}\tdice_loss={loss.data.cpu().numpy()}")
+                print(f"step={step}\tepoch={epoch}\titer={iteration}\tloss={loss.data.cpu().numpy()}")
                 writer.add_scalar("cnn_dice_loss", loss.data.cpu().numpy(), step)
                 writer.add_scalar("lr", optimizer.param_groups[0]["lr"], step)
 
@@ -116,6 +124,7 @@ def main(args):
                 train_dice = train_dice.cpu().numpy()
                 cls_train_dices = cls_train_dices.cpu().numpy()
                 writer.add_scalar("train_dice", train_dice, step)
+                # lr_sched.step(1-train_dice)
                 for j, cls_train_dice in enumerate(cls_train_dices):
                     writer.add_scalar(f"train_dice/{j}", cls_train_dice, step)
                 print(f"step={step}\tepoch={epoch}\titer={iteration}\ttrain_eval: train_dice={train_dice}")
@@ -139,6 +148,9 @@ def main(args):
                     f.write(" ".join([str(dice_score) for dice_score in best_cls_val_dices]))
                     f.close()
                     print(f"better val dice detected.")
+                # if step % 5000 == 0:
+                #     _pickle.dump(net.state_dict(), open(os.path.join(args.log_dir, '{}.pth.tar'.format(step)),
+                #                                         'wb'))
 
             step += 1
 

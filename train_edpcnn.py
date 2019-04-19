@@ -1,4 +1,4 @@
-from network import UNet, SnakeApproxNet
+from network import UNet
 import torch
 import argparse
 from data_iterator import Dataset
@@ -16,6 +16,7 @@ from snake.utils import bilinear_inter
 import cv2
 from scipy.stats.distributions import truncnorm
 import timeit
+from warmup_scheduler import GradualWarmupScheduler
 
 
 def parse_args():
@@ -81,6 +82,7 @@ def star_pattern_ind_to_mask(ind_sets, centers, H, W, num_lines, radius, center_
             center_jitter=c_o, angle_jitter=a_o
         )
         contour = contour[:, ::-1]
+        # contour = contour + 1  # adjust because opencv treat image index starting from 1. <- This is wrong!
         mask = np.zeros((H, W))
         cv2.fillPoly(mask, pts=[contour.astype(int)], color=(1,))
         masks.append(mask)
@@ -144,7 +146,7 @@ def do_eval(net, snake: SnakePytorch, imgs, masks, centers, batch_sz, num_lines,
     with torch.no_grad():
         data_sz = len(imgs)
         n_batches = int(np.ceil(data_sz / batch_sz))
-        total_loss = []
+        dice_scores = []
         gs_fixed_shape = torch.zeros((snake.b_sz, num_lines, radius)).cuda()
         for j in range(n_batches):
             start = j * batch_sz
@@ -156,7 +158,7 @@ def do_eval(net, snake: SnakePytorch, imgs, masks, centers, batch_sz, num_lines,
             batch_input = torch.cuda.FloatTensor(batch_input)
             masks_batch = torch.cuda.FloatTensor(masks_batch)
 
-            gs_logits = net(batch_input)
+            gs_logits = net(batch_input)[:, 3, ...]
 
             # get pixel values on the star pattern
             gs_logits, _, _ = get_star_pattern_values(gs_logits, None, centers_batch, num_lines, radius + 1)
@@ -172,17 +174,28 @@ def do_eval(net, snake: SnakePytorch, imgs, masks, centers, batch_sz, num_lines,
             pred_masks = star_pattern_ind_to_mask(ind_sets, centers_batch, H, W, num_lines, radius)
             pred_masks = torch.cuda.FloatTensor(pred_masks)
 
-            loss = dice_score(pred_masks, masks_batch, False)
-            total_loss.append(loss)
-        total_loss = torch.cat(total_loss, 0)
-        total_loss = torch.mean(total_loss)
-    return total_loss
+            dice_b = dice_score(pred_masks, masks_batch, False)
+            dice_scores.append(dice_b)
+        dice_scores = torch.cat(dice_scores, 0)
+        dice_scores = torch.mean(dice_scores)
+    return dice_scores
 
 
 def get_random_jitter(radius, theta, num=1):
     c_js, a_js = [], []
     for _ in range(num):
         c_j = sample_2d_truncnorm(radius, 1).flatten()
+        a_j = np.random.uniform(-theta, theta)
+        c_js.append(c_j)
+        a_js.append(a_j)
+    return c_js, a_js
+
+
+def get_random_jitter_by_mask(mask, center, label_inds, theta, num=1):
+    c_js, a_js = [], []
+    for _ in range(num):
+        c_j = sample_point_inside_mask(mask, label_inds).flatten()
+        c_j = c_j - center.reshape(c_j.shape)
         a_j = np.random.uniform(-theta, theta)
         c_js.append(c_j)
         a_js.append(a_j)
@@ -207,6 +220,16 @@ def mask_to_indices(mask, center, radius, num_lines, center_jitter, angle_jitter
     return indices
 
 
+def sample_point_inside_mask(arr, label_inds):
+    # uniformly sample point inside arr that has value in label_inds
+    rows, cols = np.where(np.isin(arr, label_inds))
+    if len(rows) > 0:
+        choice = np.random.randint(len(rows))
+        return np.asarray([rows[choice], cols[choice]])
+    else:
+        return np.asarray([0, 0])
+
+
 def main(args):
     torch.backends.cudnn.benchmark = True
     seed_all(args.seed)
@@ -217,13 +240,15 @@ def main(args):
     train = d.train_set
     valid = d.test_set
 
-    net = UNet(in_dim=1, out_dim=num_classes).cuda()
-    snake_approx_net = SnakeApproxNet(n_bc=8).cuda()
+    net = UNet(in_dim=1, out_dim=4).cuda()
+    snake_approx_net = UNet(in_dim=1, out_dim=1, wf=3, padding=True, first_layer_pad=None, depth=4,
+                            last_layer_resize=True).cuda()
     best_val_dice = -np.inf
 
     optimizer = torch.optim.Adam(params=net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     snake_approx_optimizer = torch.optim.Adam(params=snake_approx_net.parameters(), lr=args.lr,
                                               weight_decay=args.weight_decay)
+    scheduler_warmup = GradualWarmupScheduler(optimizer, multiplier=10, total_epoch=50, after_scheduler=None)
 
     # load model
     if args.ckpt:
@@ -246,6 +271,8 @@ def main(args):
     for epoch in range(1, args.n_epochs + 1):
         for iteration in range(1, int(np.ceil(train.dataset_sz() / args.batch_sz)) + 1):
 
+            scheduler_warmup.step()
+
             imgs, masks, onehot_masks, centers, dts_modified, dts_original, jitter_radius, bboxes = \
                 train.next_batch(args.batch_sz)
 
@@ -256,10 +283,10 @@ def main(args):
             unet_logits = net(xs)
 
             center_jitters, angle_jitters = [], []
-            for img, center, j_r in zip(imgs, centers, jitter_radius):
+            for img, mask, center in zip(imgs, masks, centers):
+                c_j, a_j = get_random_jitter_by_mask(mask, center, [1], args.theta_jitter)
                 if not args.use_center_jitter:
-                    j_r = 0
-                c_j, a_j = get_random_jitter(j_r, args.theta_jitter)
+                    c_j = np.zeros_like(c_j)
                 center_jitters.append(c_j)
                 angle_jitters.append(a_j)
 
@@ -267,7 +294,7 @@ def main(args):
             angle_jitters = np.asarray(angle_jitters)
 
             # args.radius + 1 because we need additional outermost points for the gradient
-            gs_logits_whole_img = unet_logits
+            gs_logits_whole_img = unet_logits[:, 3, ...]
             gs_logits, coords_r, coords_c = get_star_pattern_values(gs_logits_whole_img, None, centers, args.num_lines,
                                                                     args.radius + 1, center_jitters=center_jitters,
                                                                     angle_jitters=angle_jitters)
@@ -354,7 +381,7 @@ def main(args):
                 writer.add_scalar("lr", optimizer.param_groups[0]["lr"], step)
 
             if step % args.train_eval_freq == 0:
-                train_dice = do_eval(net, snake, train.images, train.masks, train.centers, args.batch_sz,
+                train_dice = do_eval(net, snake_eval, train.images, train.masks, train.centers, args.batch_sz,
                                      args.num_lines, args.radius,
                                      smoothing_window=args.smoothing_window).data.cpu().numpy()
                 writer.add_scalar("train_dice", train_dice, step)

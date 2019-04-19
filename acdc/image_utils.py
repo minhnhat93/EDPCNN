@@ -65,9 +65,11 @@ def reshape_2Dimage_to_tensor(image):
     return np.reshape(image, (1,image.shape[0], image.shape[1],1))
 
 
-def keep_largest_connected_components(mask):
+def keep_largest_connected_components(mask, center=None):
     '''
     Keeps only the largest connected components of each label for a segmentation mask.
+    centroid: if center is not None, the region kept must contain center
+    centroid is 3d point
     '''
 
     out_img = np.zeros(mask.shape, dtype=np.uint8)
@@ -78,6 +80,14 @@ def keep_largest_connected_components(mask):
         blobs = measure.label(binary_img, connectivity=1)
 
         props = measure.regionprops(blobs)
+
+        if center is not None:
+            prop_w_center_inds = []
+            for j, prop in enumerate(props):
+                if center in prop.coords:
+                    prop_w_center_inds.append(j)
+            if len(prop_w_center_inds) > 0:
+                props = [props[j] for j in prop_w_center_inds]
 
         if not props:
             continue

@@ -38,3 +38,4 @@ def log_param_and_grad(net: UNet, writer: tensorboardX.SummaryWriter, step):
         writer.add_histogram(f"grad/{name}", param.grad.detach().cpu().numpy(), step)
         writer.add_histogram(f"grad_norm/{name}", np.sqrt((param**2).sum().detach().cpu().numpy()), step)
         writer.add_histogram(f"param/{name}", param.detach().cpu().numpy(), step)
+

@@ -17,7 +17,7 @@ def one_hot_encode(y, num_classes=None):
 def get_center_of_mass(mask, index):
     # return center of mass
     # output will be in (row, col) order
-    center = scipy.ndimage.measurements.center_of_mass(mask, mask, index)
+    center = scipy.ndimage.measurements.center_of_mass(np.ones_like(mask), mask, index)
     center = np.asarray(center)
     return center
 
@@ -28,19 +28,21 @@ def get_distance_transform(img, center):
     edges = 1.0 - canny(img.squeeze())
     dt = distance_transform_edt(edges, 0.8)
     dt_original = np.expand_dims(dt.copy(), 0)
-    r, c = int(center[0]), int(center[1])
-    dt[dt > dt[r, c]] = dt[r, c]
-    dt = (dt - np.min(dt)) / (np.max(dt) - np.min(dt))
+    # r, c = int(center[0]), int(center[1])
+    # dt[dt > dt[r, c]] = dt[r, c]
+    # dt = (dt - np.min(dt)) / (np.max(dt) - np.min(dt))
     dt = np.expand_dims(dt, 0)
-    dt_original /= np.sqrt(H**2 + W**2)
+    dt_original /= np.sqrt(H ** 2 + W ** 2)
     return dt, dt_original
 
 
 class DatasetIterator:
-    def __init__(self, images, masks, removed_classes=None, center_of_mass_class=3, seed=0, size_limit=10000000):
+    def __init__(self, images, masks, removed_classes=None, center_of_mass_class=3, seed=0, size_limit=10000000,
+                 unet=None, remove_nan_centers=True):
         assert len(images) == len(masks)
         self.images = np.asarray(images)
         self.masks = np.asarray(masks)
+        self.remove_nan_centers = remove_nan_centers
 
         # mask the right (and maybe left as well) ventricle as background as we are not working on these
         if removed_classes is not None:
@@ -56,19 +58,19 @@ class DatasetIterator:
         for c in classes:
             self.masks[self.masks == c] = id_assign[c]
 
-        # remove all samples that doesn't have our specific class
-        empty_images = []
-        for j, mask in enumerate(self.masks):
-            if (mask == id_assign[center_of_mass_class]).astype(int).sum() == 0:
-                empty_images.append(j)
-        self.images = np.delete(self.images, empty_images, axis=0)
-        self.masks = np.delete(self.masks, empty_images, axis=0)
+        # # remove all samples that doesn't have our specific class
+        # empty_images = []
+        # for j, mask in enumerate(self.masks):
+        #     if (mask == id_assign[center_of_mass_class]).astype(int).sum() == 0:
+        #         empty_images.append(j)
+        # self.images = np.delete(self.images, empty_images, axis=0)
+        # self.masks = np.delete(self.masks, empty_images, axis=0)
 
         # randomize dataset
         self.seed = seed
         self._rng = np.random.RandomState()
         self._seed()
-        self.randomize()
+        self.randomize(remove_nan_center=False)
         indices = self._indices_permute[:size_limit]
         self.images = self.images[indices]
         self.masks = self.masks[indices]
@@ -105,7 +107,10 @@ class DatasetIterator:
         H, W = self.images.shape[-2:]
         self.jitter_radius = []
         for center, dt in zip(self.centers, self.dts_original):
-            self.jitter_radius.append(int(dt[0, int(center[0]), int(center[1])] * np.sqrt(H**2 + W**2)))
+            if not np.any(np.isnan(center)):
+                self.jitter_radius.append(int(dt[0, int(center[0]), int(center[1])] * np.sqrt(H ** 2 + W ** 2)))
+            else:
+                self.jitter_radius.append(-1)
         self.jitter_radius = np.asarray(self.jitter_radius)
 
         self.bboxes = []
@@ -116,38 +121,70 @@ class DatasetIterator:
             self.bboxes.append(bbox)
         self.bboxes = np.asarray(self.bboxes)
 
+        # do the inference of UNet here so we won't have to run it again during testing. save time
+        if unet is not None:
+            import timeit
+            import torch
+            start = timeit.default_timer()
+            self.unet_centers = []
+            self.unet_seg = []
+            bs = 10
+            for j in range(int(np.ceil(len(self.images) / bs))):
+                batch = self.images[j * bs:(j + 1) * bs]
+                batch = torch.cuda.FloatTensor(batch)
+                seg = unet(batch).data.cpu().numpy()
+                seg = np.argmax(seg, axis=1)
+                self.unet_seg.append(seg)
+                seg = (seg > 0).astype(np.float32)
+                c = np.asarray([get_center_of_mass(each, 1) for each in seg])
+                self.unet_centers.append(c)
+            self.unet_centers = np.concatenate(self.unet_centers)
+            self.unet_seg = np.concatenate(self.unet_seg)
+            stop = timeit.default_timer()
+            print("Time takes to compute center using UNet: {:.2f}s".format(stop - start))
+            print(np.where(np.isnan(self.unet_centers)))
+        else:
+            self.unet_centers = None
+        self.non_nan_indices = np.unique(np.where(np.invert(np.isnan(self.centers)))[0])
         """
         Additional information:
         ---------------------------
         1 classes:
-        
+
         max bboxes row/col difference: 
         - train: 59, 62
         -> max radius = 62 / 2 * sqrt(2) = 44
-        
+
         max jitter radius:
         - train: 21
 
         =====> max total_radius: 65
         ----------------------------
         2 classes:
-        
+
         max bboxes row/col difference: 
         - train: 69, 73
         -> max radius = 73 / 2 * sqrt(2) = 52
-        
+
         max jitter radius:
         - train: 21
 
         =====> max total_radius: 75
         """
-        self.randomize()
+        self.randomize(self.remove_nan_centers)
 
     def dataset_sz(self):
-        return len(self.images)
+        if self.remove_nan_centers:
+            return len(self.non_nan_indices)
+        else:
+            return len(self.images)
 
-    def randomize(self):
-        self._indices_permute = self._rng.permutation(self.dataset_sz())
+    def randomize(self, remove_nan_center=True):
+        if remove_nan_center:
+            _permute = self._rng.permutation(len(self.non_nan_indices))
+            self._indices_permute = self.non_nan_indices[_permute]
+        else:
+            self._indices_permute = self._rng.permutation(len(self.images))
         self.batch_ptr = 0
 
     def next_batch(self, batch_sz):
@@ -164,12 +201,18 @@ class DatasetIterator:
         dts_original = self.dts_original[indices]
         jitter_radius = self.jitter_radius[indices]
         bboxes = self.bboxes[indices]
+        if self.unet_centers is not None:
+            unet_centers = self.unet_centers[indices]
 
         self.batch_ptr += batch_sz
         if self.batch_ptr >= self.dataset_sz():
             extra_sz = self.batch_ptr - self.dataset_sz()
-            self.randomize()
-            extra_images, extra_masks, extra_one_hot_masks, extra_centers, extra_dts_modified, extra_dts_original, \
+            self.randomize(self.remove_nan_centers)
+            if self.unet_centers is not None:
+                extra_images, extra_masks, extra_one_hot_masks, extra_centers, extra_dts_modified, extra_dts_original, \
+                extra_jitter_radius, extra_bboxes, extra_unet_centers = self.next_batch(extra_sz)
+            else:
+                extra_images, extra_masks, extra_one_hot_masks, extra_centers, extra_dts_modified, extra_dts_original, \
                 extra_jitter_radius, extra_bboxes = self.next_batch(extra_sz)
             images = np.concatenate([images, extra_images], axis=0)
             masks = np.concatenate([masks, extra_masks], axis=0)
@@ -179,8 +222,14 @@ class DatasetIterator:
             dts_original = np.concatenate([dts_original, extra_dts_original], axis=0)
             jitter_radius = np.concatenate([jitter_radius, extra_jitter_radius], axis=0)
             bboxes = np.concatenate([bboxes, extra_bboxes], axis=0)
+            if self.unet_centers is not None:
+                unet_centers = np.concatenate([unet_centers, extra_unet_centers])
 
-        return images, masks, one_hot_masks, centers, dts_modified, dts_original, jitter_radius, bboxes
+        if self.unet_centers is not None:
+            return images, masks, one_hot_masks, centers, dts_modified, dts_original, jitter_radius, bboxes, \
+                   unet_centers
+        else:
+            return images, masks, one_hot_masks, centers, dts_modified, dts_original, jitter_radius, bboxes
 
     def _seed(self):
         self._rng.seed(self.seed)
@@ -188,10 +237,10 @@ class DatasetIterator:
 
 class Dataset:
     def __init__(self,
-                 acdc_raw_folder="'/home/user/ACDC-dataset'",
+                 acdc_raw_folder="/home/nhat/ACDC-dataset",
                  preprocessing_folder='preproc_data',
                  train_set_size=1000000, valid_set_size=1000000,
-                 num_cls=1):
+                 num_cls=1, unet=None, remove_nan_center=True):
 
         data_file_path = os.path.join(preprocessing_folder, "data_2D_size_212_212_res_1.36719_1.36719.hdf5")
         if not os.path.exists(data_file_path):
@@ -207,13 +256,19 @@ class Dataset:
         # for now only consider class 3, remove both 1 and 2
         if num_cls == 1:
             removed_classes = [1, 2]
-        else:
+        elif num_cls == 2:
             removed_classes = [1]
+        else:
+            removed_classes = []
         center_of_mass_class = 3
         self.train_set = DatasetIterator(data["images_train"], data["masks_train"],
-                                         removed_classes, center_of_mass_class, seed=0, size_limit=train_set_size)
+                                         removed_classes, center_of_mass_class, seed=0, size_limit=train_set_size,
+                                         unet=unet, remove_nan_centers=remove_nan_center)
         self.test_set = DatasetIterator(data["images_test"], data["masks_test"],
-                                        removed_classes, center_of_mass_class, seed=1, size_limit=valid_set_size)
+                                        removed_classes, center_of_mass_class, seed=1, size_limit=valid_set_size,
+                                        unet=unet, remove_nan_centers=remove_nan_center)
+        # if unet is not None:
+        #     assert not np.any(np.isnan(self.test_set.unet_centers))
 
 
 if __name__ == "__main__":
@@ -221,6 +276,7 @@ if __name__ == "__main__":
     print("Finished")
 
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 

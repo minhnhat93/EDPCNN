@@ -46,8 +46,10 @@ in the experiments files.
 - Sometime the training of the original U-Net may diverge and never go above 20% dice score on train set with only 10 images, simply restart the run script if this occurs.
 
 # Result
-![result](imgs/result_combined.png)
+- Dice score, ASSD and Hausdorff distance on validation set vs training set size
 
-(a) Ablation study: Performance of U-Net vs EDPCNN with increasing dataset size.
+![result_fig](imgs/result_all.png)
 
-(b) EDPCNN robustness with respect to the accuracy of the center.
+- Detailed results when trained with full dataset
+
+![result_table](imgs/result_table.png)
