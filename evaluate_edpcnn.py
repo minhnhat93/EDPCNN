@@ -21,9 +21,10 @@ import sys_config as exp_config
 import torch.nn.functional as F
 from snake.snake import SnakePytorch
 from scipy.ndimage.measurements import center_of_mass
+from train_edpcnn import get_star_pattern_values, smooth_ind, star_pattern_ind_to_mask, get_random_jitter
+from data_iterator import get_distance_transform
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
-from train_edpcnn import get_star_pattern_values, smooth_ind, star_pattern_ind_to_mask
 
 
 def get_slice(img, nx, ny):
@@ -49,7 +50,8 @@ def get_slice(img, nx, ny):
 
 
 def score_data(input_folder, output_folder, model_path, args,
-               do_postprocessing=False, gt_exists=True, evaluate_all=False):
+               do_postprocessing=False, gt_exists=True, evaluate_all=False,
+               random_center_ratio=None):
     num_classes = args.num_cls
     nx, ny = exp_config.image_size[:2]
     batch_size = 1
@@ -156,30 +158,40 @@ def score_data(input_folder, output_folder, model_path, args,
                         lv_center = np.asarray(lv_center)
                         mo_center = np.asarray(mo_center)
 
-                        lv_logit, _, _ = get_star_pattern_values(logit[:, 3, ...], None, lv_center, args.num_lines,
-                                                                 args.radius + 1)
-                        lv_gs = lv_logit[:, :, 1:] - lv_logit[:, :, :-1]  # compute the gradient
-                        # run DP algo
-                        # can only put batch with fixed shape into the snake algorithm
-                        lv_ind = snake(lv_gs).data.cpu().numpy()
-                        lv_ind = np.expand_dims(smooth_ind(lv_ind.squeeze(-1), args.smoothing_window), -1)
-                        lv_mask = star_pattern_ind_to_mask(lv_ind, lv_center, nx, ny, args.num_lines, args.radius)
-                        if np.isnan(lv_center[0, 0]):
-                            lv_mask *= 0
+                        lv_mask = np.zeros((nx, ny))
+                        if not np.isnan(lv_center[0, 0]):
+                            if random_center_ratio:
+                                dt, _ = get_distance_transform(unet_mask == 3, None)
+                                max_radius = dt[0, int(lv_center[0][0]), int(lv_center[0][1])]
+                                radius = int(max_radius * random_center_ratio)
+                                c_j, _ = get_random_jitter(radius, 0)
+                            else:
+                                c_j = None
+
+                            lv_logit, _, _ = get_star_pattern_values(logit[:, 3, ...], None, lv_center, args.num_lines,
+                                                                     args.radius + 1, center_jitters=c_j)
+                            lv_gs = lv_logit[:, :, 1:] - lv_logit[:, :, :-1]  # compute the gradient
+                            # run DP algo
+                            # can only put batch with fixed shape into the snake algorithm
+                            lv_ind = snake(lv_gs).data.cpu().numpy()
+                            lv_ind = np.expand_dims(smooth_ind(lv_ind.squeeze(-1), args.smoothing_window), -1)
+                            lv_mask = star_pattern_ind_to_mask(lv_ind, lv_center, nx, ny, args.num_lines, args.radius)
 
                         if num_classes == 1:
                             pred_mask = lv_mask * 3
                         else:
-                            mo_logit, _, _ = get_star_pattern_values(logit[:, 2, ...], None, lv_center,
-                                                                     args.num_lines, args.radius + 1)
-                            mo_gs = mo_logit[:, :, 1:] - mo_logit[:, :, :-1]  # compute the gradient
-                            mo_ind = snake(mo_gs).data.cpu().numpy()
-                            mo_ind = mo_ind[:len(mo_gs), ...]
-                            mo_ind = np.expand_dims(smooth_ind(mo_ind.squeeze(-1), args.smoothing_window), -1)
-                            mo_mask = star_pattern_ind_to_mask(mo_ind, lv_center, nx, ny, args.num_lines,
-                                                               args.radius)
-                            if np.isnan(mo_center[0]):
-                                mo_mask *= 0
+                            mo_mask = np.zeros((nx, ny))
+                            if not np.isnan(mo_center[0]):
+                                c_j = None
+                                mo_logit, _, _ = get_star_pattern_values(logit[:, 2, ...], None, lv_center,
+                                                                         args.num_lines, args.radius + 1,
+                                                                         center_jitters=c_j)
+                                mo_gs = mo_logit[:, :, 1:] - mo_logit[:, :, :-1]  # compute the gradient
+                                mo_ind = snake(mo_gs).data.cpu().numpy()
+                                mo_ind = mo_ind[:len(mo_gs), ...]
+                                mo_ind = np.expand_dims(smooth_ind(mo_ind.squeeze(-1), args.smoothing_window), -1)
+                                mo_mask = star_pattern_ind_to_mask(mo_ind, lv_center, nx, ny, args.num_lines,
+                                                                   args.radius)
                             pred_mask = lv_mask * 3 + (1 - lv_mask) * mo_mask * 2  # 3 is lv class, 2 is mo class
 
                         prediction_cropped = pred_mask.squeeze()
@@ -298,6 +310,9 @@ if __name__ == '__main__':
     parser.add_argument('--num_lines', default=25, type=int)
     parser.add_argument('--radius', default=65, type=int)
     parser.add_argument('--smoothing_window', default=1, type=int)
+    parser.add_argument('--seed', default=1, type=int)
+    parser.add_argument('--random_center_ratio', default=0.0, type=float)
+    parser.add_argument('--number_of_runs', default=5, type=int)
 
     args = parser.parse_args()
 
@@ -339,12 +354,37 @@ if __name__ == '__main__':
     utils.makefolder(path_diff)
     utils.makefolder(path_gt)
 
-    init_iteration = score_data(input_path,
-                                output_path,
-                                model_path,
-                                args,
-                                do_postprocessing=True,
-                                gt_exists=(not evaluate_test_set),
-                                evaluate_all=evaluate_all)
+    if args.random_center_ratio > 0.0:
+        np.random.seed(args.seed)
+        seeds = [np.random.randint(1000000) for _ in range(args.number_of_runs)]
 
-    metrics_acdc.main(path_gt, path_pred, path_eval)
+        avg_dices = []
+        for s in seeds:
+            np.random.seed(s)
+            init_iteration = score_data(input_path,
+                                        output_path,
+                                        model_path,
+                                        args,
+                                        do_postprocessing=True,
+                                        gt_exists=(not evaluate_test_set),
+                                        evaluate_all=evaluate_all,
+                                        random_center_ratio=args.random_center_ratio)
+
+            avg_dice = metrics_acdc.main(path_gt, path_pred, path_eval)
+            avg_dices.append(avg_dice)
+        avg_dices = np.asarray(avg_dices)
+        print(avg_dices)
+        print("mean: {}\tstd: {}".format(np.mean(avg_dices), np.std(avg_dices)))
+        print(np.mean(avg_dices))
+        print(np.std(avg_dices))
+    else:
+        init_iteration = score_data(input_path,
+                                    output_path,
+                                    model_path,
+                                    args,
+                                    do_postprocessing=True,
+                                    gt_exists=(not evaluate_test_set),
+                                    evaluate_all=evaluate_all,
+                                    random_center_ratio=0.0)
+
+        avg_dice = metrics_acdc.main(path_gt, path_pred, path_eval)

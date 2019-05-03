@@ -330,6 +330,8 @@ def main(path_gt, path_pred, eval_dir):
         raise ValueError(
             "The paths given needs to be two directories or two files.")
 
+    return np.mean(df.loc[df['struc'] == 'LV']['dice'])
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
